@@ -44,7 +44,7 @@ CLog::CLog()
 	m_logMaxSize = 10;
 	m_logLevel = ERROR_LEVEL;
 	m_logFileCount = 10;
-
+	m_syncWriteLogFlag = false;
 	m_threadStartFlag = false;
 }
 
@@ -60,6 +60,12 @@ CLog::~CLog()
 
 }
 
+
+int CLog::setSyncWriteLog(bool syncFlag)
+{
+	m_syncWriteLogFlag = syncFlag;
+	return 0;
+}
 
 int CLog::setLogDirName(std::string dir)
 {
@@ -102,7 +108,7 @@ int CLog::setLogLevel(int level)
 
 int CLog::start()
 {
-	if(!isStarted())
+	if(!isStarted() && !m_syncWriteLogFlag) 
 	{
 		m_threadStartFlag = true;
 		m_pthreadWrite = new std::thread(&CLog::writeLog,this);
@@ -114,10 +120,13 @@ int CLog::start()
 
 int CLog::stop()
 {
-	m_threadStartFlag = false;
-	m_pthreadWrite->join();
-	delete m_pthreadWrite;
-	m_pthreadWrite = NULL;
+	if(!m_syncWriteLogFlag)
+	{
+		m_threadStartFlag = false;
+		m_pthreadWrite->join();
+		delete m_pthreadWrite;
+		m_pthreadWrite = NULL;
+	}
 
 	if (m_streamLog.is_open())
 		m_streamLog.close();
@@ -135,7 +144,7 @@ bool CLog::isStarted()
 void CLog::write(unsigned int loglevel, char* file,char* function, unsigned int line, const char *fmt, ...)
 {
 	if(loglevel < m_logLevel) return;
-	if(!isStarted()) return;
+	if(!isStarted() && !m_syncWriteLogFlag) return;
 	if(m_logDirName.empty()) return;
 
 	std::unique_lock <std::mutex> lck(g_log_push_mutex);
@@ -188,9 +197,16 @@ void CLog::write(unsigned int loglevel, char* file,char* function, unsigned int 
 	log_element.srcFile = file;
 	log_element.lineNum = line;
 
-	g_queue_mutex.lock();
-	m_queue.push(log_element);
-	g_queue_mutex.unlock();
+	if(m_syncWriteLogFlag)
+	{
+		writeLogSync(log_element);
+	}
+	else
+	{
+		g_queue_mutex.lock();
+		m_queue.push(log_element);
+		g_queue_mutex.unlock();
+	}
 
 #ifdef _WIN32
 	delete log_buf;
@@ -254,12 +270,12 @@ void CLog::deleteOldLogFiles(std::string cate_dir)
     }
 	else
 	{
-        while(_findnext(lf, &file) == 0) {
+        do {   
             if (strcmp(file.name, ".") == 0 || strcmp(file.name, "..") == 0)
                 continue;
 
             files.push_back(file.name);
-        }
+        }  while(_findnext(lf, &file) == 0);
     }
     _findclose(lf);
 #elif __linux__
@@ -324,9 +340,7 @@ void CLog::writeLog()
 
 		std::cout << "queue size : "  << m_queue.size() << std::endl;
 		if(m_queue.size() < 20)
-		{
 			g_cv_log_push.notify_all();
-		}
 
 		if (m_streamLog.is_open())
 		{
@@ -358,5 +372,23 @@ void CLog::writeLog()
 
 }
 
+
+void CLog::writeLogSync(struct LOG_ST logelement)
+{
+	if (!m_streamLog.is_open())
+	{
+		m_streamLog.open (m_logDirName+"/"+m_logfilename, std::fstream::out | std::fstream::app);
+	}
+
+	m_streamLog << "["<< logelement.logTime << "] [" << logelement.logLevel << "] " \
+		<< "[" << logelement.pid << "] [" << logelement.tid <<"] -- " \
+		<< logelement.logContent << " [" << logelement.srcFile << "(" << logelement.lineNum << "):" \
+		<< logelement.funcName << "]" << std::endl;
+
+	checkLogFileSize();
+
+	if (m_streamLog.is_open())
+		m_streamLog.close();
+}
 
 CLog runlog;

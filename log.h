@@ -40,13 +40,15 @@ public:
 	int setLogMaxSize(int size);
 	int setLogLevel(int level);
 	int setLogFileCount(int count);
+	int setSyncWriteLog(bool syncFlag = false);
 
 	int start();
 	int stop();
 	bool isStarted();
 
 	void write(unsigned int loglevel, char* file,char* funtion, unsigned int line, const char *fmt, ...);
-	virtual void writeLog();
+	void writeLog();
+	void writeLogSync(struct LOG_ST log_element);
 
 
 private:
@@ -59,7 +61,7 @@ private:
 	std::string   m_logDirName;
 	unsigned int  m_logMaxSize;
 	unsigned int  m_logLevel;
-
+	bool          m_syncWriteLogFlag;
 	unsigned int  m_logFileCount;
 
 	std::thread*  m_pthreadWrite;

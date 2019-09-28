@@ -1,0 +1,1 @@
+[2019-09-28 13:58:21] [DEBUG ] [18688] [9108] -- AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA [d:\workspace\cpp\slog\demo\windows\slog\main.cpp(10):thread_1]

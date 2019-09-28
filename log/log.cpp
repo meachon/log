@@ -1,4 +1,3 @@
-//#include "stdafx.h"
 #include <stdio.h>
 #include "log.h"
 #include <mutex>
@@ -28,24 +27,80 @@ std::mutex g_queue_mutex;
 std::mutex g_log_console_mutex;
 
 
-CLog::CLog()
+struct LOG_ST {
+	std::string				logLevel;
+	std::string				srcFile;
+	std::string				funcName;
+	int						lineNum;
+	std::string				logContent;
+	std::string				logTime;
+	int						pid;
+	std::thread::id			tid;
+};
+
+
+class CLog
 {
-	/* 
-	m_loglevel[1] = "\e[0;32m DEBUG  \e[0m";
-	m_loglevel[2] = "\e[1;32m INFO   \e[0m";
-	m_loglevel[3] = "\e[1;33m WARN   \e[0m";
-	m_loglevel[4] = "\e[0;31m ERROR  \e[0m";
-	m_loglevel[5] = "\e[1;31m CRITIC \e[0m";
-	*/
+public:
+	CLog();
+	~CLog();
+
+	int setLogDirName( const std::string& dir);
+	int setLogMaxSize(int size);
+	int setLogLevel(int level);
+	int setLogFileCount(int count);
+	int setSyncWriteLog(bool syncFlag = false);
+	int setConsoleWrite(bool consoleFlag = false);
+	int setFileWrite(bool fileFlag = true);
+
+	int start();
+	int stop();
+	bool isStarted();
+
+	void write(unsigned int loglevel, char* file, const char* function, unsigned int line, const char *logContent);
+
+private:
+	void writeLog();
+	void writeLogSync(struct LOG_ST log_element);
+	int checkLogFileSize();
+	void deleteOldLogFiles(const std::string& cate_dir);
+
+	std::ofstream m_streamLog;
+
+	std::string   m_logfilename;
+	std::string   m_logDirName;
+	unsigned int  m_logMaxSize;
+	unsigned int  m_logLevel;
+	bool          m_syncWriteLogFlag;
+	unsigned int  m_logFileCount;
+	bool          m_consoleWriteFlag;
+	bool          m_fileWriteFlag;
+
+	std::thread*  m_pthreadWrite;
+	bool   m_threadStartFlag;
+
+	std::map<int,std::string> m_loglevel;
+	std::queue<LOG_ST>        m_queue;
+};
+
+CLog runlog;
+
+
+CLog::CLog():m_logfilename("runlog.txt"),m_logDirName("./")
+{
+#ifdef _WIN32
 	m_loglevel[1] = "DEBUG ";
 	m_loglevel[2] = "INFO  ";
 	m_loglevel[3] = "WARN  ";
 	m_loglevel[4] = "ERROR ";
 	m_loglevel[5] = "CRITIC";
-
-	m_logDirName = "./";
-	m_logfilename = "runlog.txt";
-
+#else
+	m_loglevel[1] = "\e[0;32m DEBUG  \e[0m";
+	m_loglevel[2] = "\e[1;32m INFO   \e[0m";
+	m_loglevel[3] = "\e[1;33m WARN   \e[0m";
+	m_loglevel[4] = "\e[0;31m ERROR  \e[0m";
+	m_loglevel[5] = "\e[1;31m CRITIC \e[0m";
+#endif
 	m_logMaxSize = 10;
 	m_logLevel = ERROR_LEVEL;
 	m_logFileCount = 10;
@@ -53,6 +108,7 @@ CLog::CLog()
 	m_threadStartFlag = false;
 	m_consoleWriteFlag = false;
 	m_fileWriteFlag = true;
+	m_pthreadWrite = NULL;
 }
 
 CLog::~CLog()
@@ -72,7 +128,7 @@ int CLog::setSyncWriteLog(bool syncFlag)
 	return 0;
 }
 
-int CLog::setLogDirName(std::string dir)
+int CLog::setLogDirName(const std::string& dir)
 {
 	m_logDirName = dir;
 #ifdef _WIN32
@@ -112,10 +168,8 @@ int CLog::setLogLevel(int level)
 
 int CLog::start()
 {
-	if (!m_fileWriteFlag)
-		return 0;
 
-	if (!isStarted() && !m_syncWriteLogFlag)
+	if (m_fileWriteFlag)
 	{
 		m_threadStartFlag = true;
 		m_pthreadWrite = new std::thread(&CLog::writeLog, this);
@@ -129,7 +183,7 @@ int CLog::stop()
 	if (!m_fileWriteFlag)
 		return 0;
 
-	if (!m_syncWriteLogFlag)
+	if ((m_fileWriteFlag)&&(!m_syncWriteLogFlag))
 	{
 		m_threadStartFlag = false;
 		m_pthreadWrite->join();
@@ -148,7 +202,7 @@ bool CLog::isStarted()
 	return m_threadStartFlag;
 }
 
-void CLog::write(unsigned int loglevel, char *file, const char *function, unsigned int line, const char *fmt, ...)
+void CLog::write(unsigned int loglevel, char* file, const char* function, unsigned int line, const char *logContent)
 {
 	if (loglevel < m_logLevel)
 		return;
@@ -159,43 +213,26 @@ void CLog::write(unsigned int loglevel, char *file, const char *function, unsign
 	if ((!m_consoleWriteFlag) && (!m_fileWriteFlag))
 		return;
 
-	//std::unique_lock<std::mutex> lck(g_log_push_mutex);
 	while (m_queue.size() > 100)
 	{
-		//g_cv_log_push.wait(lck);
-		usleep(100);
-	}
-
-	va_list args;
-	char *log_buf = NULL;
-	int len = 0;
-	int i;
-
-	va_start(args, fmt);
 #ifdef _WIN32
-	len = _vscprintf(fmt, args) + 1;
-	log_buf = new char[len];
-	i = vsprintf_s(log_buf, len, fmt, args);
+		Sleep(1);
 #elif __linux__
-	i = vasprintf(&log_buf, fmt, args);
+		usleep(100);
 #endif
-	va_end(args);
-
-	if(-1 == i)
-	{
-		return ;
 	}
 
 	time_t rawtime;
-	struct tm tm;
+	struct tm tmlocal;
 	char logtime[20];
 	rawtime = time(NULL);
 #ifdef _WIN32
-	localtime_s(&tm, &rawtime);
+	ZeroMemory(&tmlocal,sizeof(tm));
+	localtime_s(&tmlocal, &rawtime);
 #elif __linux__
-	localtime_r(&rawtime, &tm);
+	localtime_r(&rawtime, &tmlocal);
 #endif
-	strftime(logtime, 20, "%Y-%m-%d %X", &tm);
+	strftime(logtime, 20, "%Y-%m-%d %X", &tmlocal);
 
 	std::string filename = file;
 	int pos = filename.find_last_of('\\');
@@ -210,9 +247,9 @@ void CLog::write(unsigned int loglevel, char *file, const char *function, unsign
 	log_element.pid = getpid();
 #endif
 	log_element.tid = std::this_thread::get_id();
-	if (log_buf != NULL)
+	if (logContent != NULL)
 	{
-		log_element.logContent = log_buf;
+		log_element.logContent = logContent;
 	}
 	log_element.funcName = function;
 	log_element.srcFile = file;
@@ -221,11 +258,13 @@ void CLog::write(unsigned int loglevel, char *file, const char *function, unsign
 	if (m_consoleWriteFlag)
 	{
 		g_log_console_mutex.lock();
+
 		std::cout
-			<< "[" << log_element.logTime << "] [" << color(log_element.logLevel) << "] "
+			<< "[" << log_element.logTime << "] [" << log_element.logLevel << "] "
 			<< "[" << log_element.pid << "] [" << log_element.tid << "] -- "
 			<< log_element.logContent << " [" << log_element.srcFile << "(" << log_element.lineNum << "):"
 			<< log_element.funcName << "]" << std::endl;
+
 		g_log_console_mutex.unlock();
 	}
 
@@ -243,31 +282,9 @@ void CLog::write(unsigned int loglevel, char *file, const char *function, unsign
 		}
 	}
 
-#ifdef _WIN32
-	delete log_buf;
-#elif __linux__
-	free(log_buf);
-#endif
-	log_buf = NULL;
-
 	return;
 }
 
-std::string CLog::color(std::string level)
-{
-	std::string color_level;
-	if (level == m_loglevel[DEBUG_LEVEL])
-		color_level = "\e[0;32m DEBUG  \e[0m";
-	else if (level == m_loglevel[INFO_LEVEL])
-		color_level = "\e[1;32m INFO   \e[0m";
-	else if (level == m_loglevel[WARN_LEVEL])
-		color_level = "\e[1;33m WARN   \e[0m";
-	else if (level == m_loglevel[ERROR_LEVEL])
-		color_level = "\e[0;31m ERROR  \e[0m";
-	else if (level == m_loglevel[CRITIC_LEVEL])
-		color_level = "\e[1;31m CRITIC \e[0m";
-	return color_level;
-}
 
 
 int CLog::checkLogFileSize()
@@ -276,20 +293,23 @@ int CLog::checkLogFileSize()
 	if (m_streamLog.is_open())
 	{
 		m_streamLog.seekp(0, m_streamLog.end);
-		size_t fileSize = m_streamLog.tellp();
+		//size_t fileSize = m_streamLog.tellp();
+
+		std::streamoff fileSize = m_streamLog.tellp();
 
 		if (m_logMaxSize * 1024 * 1024 < fileSize)
 		{
 			time_t rawtime;
-			struct tm tm;
+			struct tm tmlocal;
 			char ptime[20];
 			rawtime = time(NULL);
 #ifdef _WIN32
-			localtime_s(&tm, &rawtime);
+			ZeroMemory(&tmlocal,sizeof(tm));
+			localtime_s(&tmlocal, &rawtime);
 #elif __linux__
-			localtime_r(&rawtime, &tm);
+			localtime_r(&rawtime, &tmlocal);
 #endif
-			strftime(ptime, 20, "%Y%m%d%H%M%S", &tm);
+			strftime(ptime, 20, "%Y%m%d%H%M%S", &tmlocal);
 
 			int pos = m_logfilename.find_first_of(".", 0);
 			std::string filename = m_logfilename.substr(0, pos);
@@ -307,7 +327,7 @@ int CLog::checkLogFileSize()
 	return 0;
 }
 
-void CLog::deleteOldLogFiles(std::string cate_dir)
+void CLog::deleteOldLogFiles(const std::string& cate_dir)
 {
 	std::vector<std::string> files;
 
@@ -388,10 +408,6 @@ void CLog::writeLog()
 			continue;
 		}
 
-		//std::cout << "queue size : "  << m_queue.size() << std::endl;
-		//if (m_queue.size() < 500)
-		//	g_cv_log_push.notify_all();
-
 		if (m_streamLog.is_open())
 		{
 			if (!m_queue.empty())
@@ -453,7 +469,7 @@ int CLog::setFileWrite(bool fileFlag)
 
 /////////////////////////////////////////////////////////////////////////////////////////////
 
-CLog runlog;
+//CLog runlog;
 
 void initlog(const char *dir, int file_max_size_mb, int log_level, int log_file_count,  bool sync_write_flag, bool console_write_flag, bool file_write_flag)
 {
@@ -465,4 +481,43 @@ void initlog(const char *dir, int file_max_size_mb, int log_level, int log_file_
 	runlog.setFileWrite(file_write_flag);
 	runlog.setConsoleWrite(console_write_flag);
 	runlog.start();
+
+	return;
+}
+
+
+void writelog(unsigned int loglevel, char* file, const char* function, unsigned int line, const char *fmt, ...)
+{
+	va_list args;
+	char *log_buf = NULL;
+#ifdef _WIN32
+	int len = 0;
+#endif
+
+	va_start(args, fmt);
+#ifdef _WIN32
+	len = _vscprintf(fmt, args ) + 1;
+	log_buf = new char[len];
+	vsprintf_s(log_buf, len, fmt, args);
+#elif __linux__
+	vasprintf(&log_buf, fmt, args);
+#endif
+	va_end(args);
+
+	runlog.write(loglevel, file, function, line, log_buf);
+
+#ifdef _WIN32
+	delete[] log_buf;
+#elif __linux__
+	free(log_buf);
+#endif
+	log_buf = NULL;
+
+	return;
+}
+
+
+void stoplog()
+{
+	runlog.stop();
 }

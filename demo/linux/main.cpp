@@ -73,11 +73,7 @@ void thread_5()
 int main()
 {
 
-	runlog.setLogDirName("log");
-	runlog.setLogLevel(1);
-	runlog.setLogMaxSize(10);
-	runlog.setLogFileCount(10);
-	runlog.start();
+    initlog("./logs", 10, 1, 10, false, true, true);
 
 	std::thread th1(thread_1);
 	std::thread th2(thread_2);

@@ -25,6 +25,7 @@
 
 std::mutex g_queue_mutex;
 std::mutex g_log_console_mutex;
+std::mutex g_log_file_mutex;
 
 
 struct LOG_ST {
@@ -60,6 +61,7 @@ public:
 	void write(unsigned int loglevel, char* file, const char* function, unsigned int line, const char *logContent);
 
 private:
+	std::string color(std::string level);
 	void writeLog();
 	void writeLogSync(struct LOG_ST log_element);
 	int checkLogFileSize();
@@ -88,19 +90,12 @@ CLog runlog;
 
 CLog::CLog():m_logfilename("runlog.txt"),m_logDirName("./")
 {
-#ifdef _WIN32
 	m_loglevel[1] = "DEBUG ";
 	m_loglevel[2] = "INFO  ";
 	m_loglevel[3] = "WARN  ";
 	m_loglevel[4] = "ERROR ";
 	m_loglevel[5] = "CRITIC";
-#else
-	m_loglevel[1] = "\e[0;32m DEBUG  \e[0m";
-	m_loglevel[2] = "\e[1;32m INFO   \e[0m";
-	m_loglevel[3] = "\e[1;33m WARN   \e[0m";
-	m_loglevel[4] = "\e[0;31m ERROR  \e[0m";
-	m_loglevel[5] = "\e[1;31m CRITIC \e[0m";
-#endif
+
 	m_logMaxSize = 10;
 	m_logLevel = ERROR_LEVEL;
 	m_logFileCount = 10;
@@ -168,11 +163,12 @@ int CLog::setLogLevel(int level)
 
 int CLog::start()
 {
-
-	if (m_fileWriteFlag)
-	{
-		m_threadStartFlag = true;
-		m_pthreadWrite = new std::thread(&CLog::writeLog, this);
+	if (!m_fileWriteFlag)
+		return 0;
+	if ((m_fileWriteFlag) && (!m_syncWriteLogFlag))
+		{
+			m_threadStartFlag = true;
+			m_pthreadWrite = new std::thread(&CLog::writeLog, this);
 	}
 
 	return 0;
@@ -183,7 +179,7 @@ int CLog::stop()
 	if (!m_fileWriteFlag)
 		return 0;
 
-	if ((m_fileWriteFlag)&&(!m_syncWriteLogFlag))
+	if ((m_fileWriteFlag) && (!m_syncWriteLogFlag)) 
 	{
 		m_threadStartFlag = false;
 		m_pthreadWrite->join();
@@ -260,7 +256,7 @@ void CLog::write(unsigned int loglevel, char* file, const char* function, unsign
 		g_log_console_mutex.lock();
 
 		std::cout
-			<< "[" << log_element.logTime << "] [" << log_element.logLevel << "] "
+			<< "[" << log_element.logTime << "] [" << color(log_element.logLevel) << "] "
 			<< "[" << log_element.pid << "] [" << log_element.tid << "] -- "
 			<< log_element.logContent << " [" << log_element.srcFile << "(" << log_element.lineNum << "):"
 			<< log_element.funcName << "]" << std::endl;
@@ -285,6 +281,35 @@ void CLog::write(unsigned int loglevel, char* file, const char* function, unsign
 	return;
 }
 
+std::string CLog::color(std::string level)
+{
+	std::string color_level;
+
+#ifdef _WIN32
+	if (level == m_loglevel[DEBUG_LEVEL])
+		color_level = " DEBUG  ";
+	else if (level == m_loglevel[INFO_LEVEL])
+		color_level = " INFO   ";
+	else if (level == m_loglevel[WARN_LEVEL])
+		color_level = " WARN   ";
+	else if (level == m_loglevel[ERROR_LEVEL])
+		color_level = " ERROR  ";
+	else if (level == m_loglevel[CRITIC_LEVEL])
+		color_level = " CRITIC ";
+#elif __linux__
+	if (level == m_loglevel[DEBUG_LEVEL])
+		color_level = "\e[0;32m DEBUG  \e[0m";
+	else if (level == m_loglevel[INFO_LEVEL])
+		color_level = "\e[1;32m INFO   \e[0m";
+	else if (level == m_loglevel[WARN_LEVEL])
+		color_level = "\e[1;33m WARN   \e[0m";
+	else if (level == m_loglevel[ERROR_LEVEL])
+		color_level = "\e[0;31m ERROR  \e[0m";
+	else if (level == m_loglevel[CRITIC_LEVEL])
+		color_level = "\e[1;31m CRITIC \e[0m";
+#endif
+	return color_level;
+}
 
 
 int CLog::checkLogFileSize()
@@ -408,6 +433,7 @@ void CLog::writeLog()
 			continue;
 		}
 
+		g_log_file_mutex.lock();
 		if (m_streamLog.is_open())
 		{
 			if (!m_queue.empty())
@@ -429,16 +455,19 @@ void CLog::writeLog()
 		{
 			m_streamLog.open(m_logDirName + "/" + m_logfilename, std::fstream::out | std::fstream::app);
 		}
+		g_log_file_mutex.unlock();
 	}
 
 	if (m_streamLog.is_open())
 	{
 		m_streamLog.close();
 	}
+	
 }
 
 void CLog::writeLogSync(struct LOG_ST logelement)
 {
+	g_log_file_mutex.lock();
 	if (!m_streamLog.is_open())
 	{
 		m_streamLog.open(m_logDirName + "/" + m_logfilename, std::fstream::out | std::fstream::app);
@@ -453,6 +482,7 @@ void CLog::writeLogSync(struct LOG_ST logelement)
 
 	if (m_streamLog.is_open())
 		m_streamLog.close();
+	g_log_file_mutex.unlock();
 }
 
 int CLog::setConsoleWrite(bool consoleFlag)
@@ -493,18 +523,26 @@ void writelog(unsigned int loglevel, char* file, const char* function, unsigned 
 #ifdef _WIN32
 	int len = 0;
 #endif
+	int i = 0;
 
 	va_start(args, fmt);
 #ifdef _WIN32
 	len = _vscprintf(fmt, args ) + 1;
 	log_buf = new char[len];
-	vsprintf_s(log_buf, len, fmt, args);
+	i = vsprintf_s(log_buf, len, fmt, args);
 #elif __linux__
-	vasprintf(&log_buf, fmt, args);
+	i = vasprintf(&log_buf, fmt, args);
 #endif
 	va_end(args);
 
+	if(-1 == i)
+	{
+		return ;
+	}
+
+	//g_log_file_mutex.lock();
 	runlog.write(loglevel, file, function, line, log_buf);
+	//g_log_file_mutex.unlock();
 
 #ifdef _WIN32
 	delete[] log_buf;

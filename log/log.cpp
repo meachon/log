@@ -62,7 +62,7 @@ public:
 
 private:
 	std::string color(std::string level);
-	void writeLog();
+	void threadWriteLog();
 	void writeLogSync(struct LOG_ST log_element);
 	int checkLogFileSize();
 	void deleteOldLogFiles(const std::string& cate_dir);
@@ -163,12 +163,18 @@ int CLog::setLogLevel(int level)
 
 int CLog::start()
 {
+	if (m_threadStartFlag)
+	{
+		return 0;
+	}
+	
 	if (!m_fileWriteFlag)
 		return 0;
+
 	if ((m_fileWriteFlag) && (!m_syncWriteLogFlag))
-		{
-			m_threadStartFlag = true;
-			m_pthreadWrite = new std::thread(&CLog::writeLog, this);
+	{
+		m_threadStartFlag = true;
+		m_pthreadWrite = new std::thread(&CLog::threadWriteLog, this);
 	}
 
 	return 0;
@@ -176,6 +182,11 @@ int CLog::start()
 
 int CLog::stop()
 {
+	if (!m_threadStartFlag)
+	{
+		return 0;
+	}
+
 	if (!m_fileWriteFlag)
 		return 0;
 
@@ -345,7 +356,11 @@ int CLog::checkLogFileSize()
 
 			rename(filepath.c_str(), newfilepath.c_str());
 
+#ifdef _WIN32
+			deleteOldLogFiles(m_logDirName + "/*.txt");
+#elif __linux__
 			deleteOldLogFiles(m_logDirName);
+#endif
 		}
 	}
 
@@ -368,8 +383,15 @@ void CLog::deleteOldLogFiles(const std::string& cate_dir)
 	{
 		do
 		{
-			if (strcmp(file.name, ".") == 0 || strcmp(file.name, "..") == 0)
+			if (file.attrib & _A_SUBDIR)
+			{
 				continue;
+			}
+
+			if (strcmp(file.name, ".") == 0 || strcmp(file.name, "..") == 0 )
+			{
+				continue;
+			}
 
 			files.push_back(file.name);
 		} while (_findnext(lf, &file) == 0);
@@ -418,7 +440,7 @@ int CLog::setLogFileCount(int count)
 	return 0;
 }
 
-void CLog::writeLog()
+void CLog::threadWriteLog()
 {
 	m_streamLog.open(m_logDirName + "/" + m_logfilename, std::fstream::out | std::fstream::app);
 	while (m_threadStartFlag)
@@ -436,18 +458,18 @@ void CLog::writeLog()
 		g_log_file_mutex.lock();
 		if (m_streamLog.is_open())
 		{
+			g_queue_mutex.lock();
 			if (!m_queue.empty())
 			{
-				g_queue_mutex.lock();
 				struct LOG_ST logelement = m_queue.front();
 				m_queue.pop();
-				g_queue_mutex.unlock();
-
+				
 				m_streamLog << "[" << logelement.logTime << "] [" << logelement.logLevel << "] "
 							<< "[" << logelement.pid << "] [" << logelement.tid << "] -- "
 							<< logelement.logContent << " [" << logelement.srcFile << "(" << logelement.lineNum << "):"
 							<< logelement.funcName << "]" << std::endl;
 			}
+			g_queue_mutex.unlock();
 
 			checkLogFileSize();
 		}

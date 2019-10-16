@@ -73,7 +73,7 @@ void thread_5()
 int main()
 {
 
-	initlog("./logs", 10, 1, 10, true, true, true);
+	initlog(".\\logs", 10, 1, 2, true, true, true);
 
 	std::thread th1(thread_1);
 	std::thread th2(thread_2);

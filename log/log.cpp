@@ -23,10 +23,7 @@
 #include <string.h>
 #endif
 
-std::mutex g_queue_mutex;
-std::mutex g_log_console_mutex;
-std::mutex g_log_file_mutex;
-
+std::mutex g_log_mutex;
 
 struct LOG_ST {
 	std::string				logLevel;
@@ -83,7 +80,12 @@ private:
 
 	std::map<int,std::string> m_loglevel;
 	std::queue<LOG_ST>        m_queue;
+
+	std::mutex m_queue_mutex;
+	std::mutex m_log_console_mutex;
+	std::mutex m_log_file_mutex;
 };
+
 
 CLog runlog;
 
@@ -171,7 +173,7 @@ int CLog::start()
 	if (!m_fileWriteFlag)
 		return 0;
 
-	if ((m_fileWriteFlag) && (!m_syncWriteLogFlag))
+	if ((m_fileWriteFlag) && (!m_syncWriteLogFlag) && (NULL == m_pthreadWrite))
 	{
 		m_threadStartFlag = true;
 		m_pthreadWrite = new std::thread(&CLog::threadWriteLog, this);
@@ -190,7 +192,7 @@ int CLog::stop()
 	if (!m_fileWriteFlag)
 		return 0;
 
-	if ((m_fileWriteFlag) && (!m_syncWriteLogFlag)) 
+	if ((m_fileWriteFlag) && (!m_syncWriteLogFlag) && (NULL == m_pthreadWrite)) 
 	{
 		m_threadStartFlag = false;
 		m_pthreadWrite->join();
@@ -264,7 +266,7 @@ void CLog::write(unsigned int loglevel, char* file, const char* function, unsign
 
 	if (m_consoleWriteFlag)
 	{
-		g_log_console_mutex.lock();
+		m_log_console_mutex.lock();
 
 		std::cout
 			<< "[" << log_element.logTime << "] [" << color(log_element.logLevel) << "] "
@@ -272,7 +274,7 @@ void CLog::write(unsigned int loglevel, char* file, const char* function, unsign
 			<< log_element.logContent << " [" << log_element.srcFile << "(" << log_element.lineNum << "):"
 			<< log_element.funcName << "]" << std::endl;
 
-		g_log_console_mutex.unlock();
+		m_log_console_mutex.unlock();
 	}
 
 	if (m_fileWriteFlag)
@@ -283,9 +285,9 @@ void CLog::write(unsigned int loglevel, char* file, const char* function, unsign
 		}
 		else
 		{
-			g_queue_mutex.lock();
+			m_queue_mutex.lock();
 			m_queue.push(log_element);
-			g_queue_mutex.unlock();
+			m_queue_mutex.unlock();
 		}
 	}
 
@@ -455,10 +457,10 @@ void CLog::threadWriteLog()
 			continue;
 		}
 
-		g_log_file_mutex.lock();
+		m_log_file_mutex.lock();
 		if (m_streamLog.is_open())
 		{
-			g_queue_mutex.lock();
+			m_queue_mutex.lock();
 			if (!m_queue.empty())
 			{
 				struct LOG_ST logelement = m_queue.front();
@@ -469,7 +471,7 @@ void CLog::threadWriteLog()
 							<< logelement.logContent << " [" << logelement.srcFile << "(" << logelement.lineNum << "):"
 							<< logelement.funcName << "]" << std::endl;
 			}
-			g_queue_mutex.unlock();
+			m_queue_mutex.unlock();
 
 			checkLogFileSize();
 		}
@@ -477,7 +479,7 @@ void CLog::threadWriteLog()
 		{
 			m_streamLog.open(m_logDirName + "/" + m_logfilename, std::fstream::out | std::fstream::app);
 		}
-		g_log_file_mutex.unlock();
+		m_log_file_mutex.unlock();
 	}
 
 	if (m_streamLog.is_open())
@@ -489,7 +491,7 @@ void CLog::threadWriteLog()
 
 void CLog::writeLogSync(struct LOG_ST logelement)
 {
-	g_log_file_mutex.lock();
+	m_log_file_mutex.lock();
 	if (!m_streamLog.is_open())
 	{
 		m_streamLog.open(m_logDirName + "/" + m_logfilename, std::fstream::out | std::fstream::app);
@@ -504,7 +506,7 @@ void CLog::writeLogSync(struct LOG_ST logelement)
 
 	if (m_streamLog.is_open())
 		m_streamLog.close();
-	g_log_file_mutex.unlock();
+	m_log_file_mutex.unlock();
 }
 
 int CLog::setConsoleWrite(bool consoleFlag)
@@ -525,6 +527,7 @@ int CLog::setFileWrite(bool fileFlag)
 
 void initlog(const char *dir, int file_max_size_mb, int log_level, int log_file_count,  bool sync_write_flag, bool console_write_flag, bool file_write_flag)
 {
+	g_log_mutex.lock();
 	runlog.setLogDirName(dir);
 	runlog.setLogMaxSize(file_max_size_mb);
 	runlog.setLogLevel(log_level);
@@ -533,6 +536,7 @@ void initlog(const char *dir, int file_max_size_mb, int log_level, int log_file_
 	runlog.setFileWrite(file_write_flag);
 	runlog.setConsoleWrite(console_write_flag);
 	runlog.start();
+	g_log_mutex.unlock();
 
 	return;
 }
@@ -562,9 +566,9 @@ void writelog(unsigned int loglevel, char* file, const char* function, unsigned 
 		return ;
 	}
 
-	//g_log_file_mutex.lock();
+	g_log_mutex.lock();
 	runlog.write(loglevel, file, function, line, log_buf);
-	//g_log_file_mutex.unlock();
+	g_log_mutex.unlock();
 
 #ifdef _WIN32
 	delete[] log_buf;
@@ -579,5 +583,7 @@ void writelog(unsigned int loglevel, char* file, const char* function, unsigned 
 
 void stoplog()
 {
+	g_log_mutex.lock();
 	runlog.stop();
+	g_log_mutex.unlock();
 }
